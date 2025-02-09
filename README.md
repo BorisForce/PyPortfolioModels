@@ -1,8 +1,8 @@
 # PyPortfolioModels
 
 ---
-title: "Portfolio Optimization in Python"
-author: "Boris Gerát"
+title: Portfolio Optimization in Python
+author: Boris Gerát
 ---
 
 # Introduction
