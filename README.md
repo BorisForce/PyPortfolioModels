@@ -2,7 +2,7 @@
 
 ---
 Portfolio Optimization in Python
-Boris Gerát
+\\ Boris Gerát
 ---
 
 # Introduction
