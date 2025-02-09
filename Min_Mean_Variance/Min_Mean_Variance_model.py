@@ -1,23 +1,25 @@
+import sys
+import os
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(parent_dir)  # Manage folder access to utilities
+
 import pandas as pd
 import numpy as np
 import yfinance as yf
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 from collections import Counter
-from portfolio_utils import top_100
+from Utilities.portfolio_utils import top_100
 
-# -----------------------------
 # Optimization Functions
-# -----------------------------
 def mean_variance_opt(Sigma: np.ndarray, mu: np.ndarray, risk_aversion: float = 3.0):
     """
-    Compute the mean-variance optimal portfolio weights under the constraint
-    of no short-selling (weights >= 0) and full-investment (sum(weights)=1).
+    Compute the mean-variance optimal portfolio weights subject to the constraints of no short-selling (weights >= 0)
+    and full investment (sum(weights) = 1).
     """
     n = len(mu)
     
     def objective(w):
-        # Negative of utility: w^T mu - 0.5 * risk_aversion * w^T Sigma w
         return - (np.dot(w, mu) - 0.5 * risk_aversion * np.dot(w, Sigma @ w))
     
     constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
@@ -25,15 +27,12 @@ def mean_variance_opt(Sigma: np.ndarray, mu: np.ndarray, risk_aversion: float = 
     w0 = np.ones(n) / n
     
     res = minimize(objective, w0, method='SLSQP', bounds=bounds, constraints=constraints)
-    if res.success:
-        return res.x
-    else:
-        raise ValueError("Mean-variance optimization did not converge: " + res.message)
+    return res.x
 
 def min_variance_opt(Sigma: np.ndarray):
     """
-    Compute the minimum-variance portfolio weights under the constraint
-    of no short-selling (weights >= 0) and full-investment (sum(weights)=1).
+    Compute the minimum-variance portfolio weights subject to the constraints of no short-selling (weights >= 0)
+    and full investment (sum(weights) = 1).
     """
     n = Sigma.shape[0]
     
@@ -45,41 +44,34 @@ def min_variance_opt(Sigma: np.ndarray):
     w0 = np.ones(n) / n
     
     res = minimize(objective, w0, method='SLSQP', bounds=bounds, constraints=constraints)
-    if res.success:
-        return res.x
-    else:
-        raise ValueError("Minimum variance optimization did not converge: " + res.message)
-
-# -----------------------------
+    return res.x
+    
 # Download Data & Prepare Returns
-# -----------------------------
 start_date = "2015-09-01"
-end_date = "2023-01-01"
-stocks = list(top_100.keys())
+end_date = "2024-09-01"
+stocks = list(top_100.keys())  # Retrieve stocks from the utility file; these will be useful later when working with the API
 
 # Stock prices and returns
 prices = yf.download(stocks, start=start_date, end=end_date, interval="1mo")['Adj Close']
 prices = prices.resample("Q").last()
 returns = prices.pct_change().dropna()
-prices = prices.iloc[1:]
+prices = prices.iloc[1:]  # Adjust for the missing observation resulting from the percentage change calculation
 
 # Market (S&P 500) data and returns
 market_data = yf.download("^GSPC", start_date, end_date, interval="1mo")['Adj Close']
 market_data = market_data.resample("Q").last()
 market_returns = market_data.pct_change().dropna()
 
-# Risk-free rate (using IRX as proxy)
+# Risk-free rate (using IRX as a proxy)
 risk_free = yf.download("^IRX", start_date, end_date, interval="1mo")['Adj Close']
 risk_free = risk_free.resample("Q").last().dropna()
 
-# -----------------------------
 # Simulation Functions
-# -----------------------------
 def simulate_performance(rolling_window, top_n):
     """
-    Run the simulation over the entire out-of-sample period for a given
-    rolling window and top_n. Returns the final cumulative return for both
-    the MVM and MV models.
+    Run the simulation over the entire out-of-sample period for a given rolling window and top_n 
+    (the number of stocks with the highest CAPM returns that are selected for the second stage of optimization).
+    Returns the final cumulative return for both the MVM and MV models.
     """
     mvm_returns = []
     mv_returns = []
@@ -100,22 +92,23 @@ def simulate_performance(rolling_window, top_n):
         market_returns_mean = past_market_slice.mean()
         capmt_returns = risk_free_period + betas * (market_returns_mean - risk_free_period)
         
-        # Select top_n stocks (highest expected returns)
+        # Select top_n stocks (with the highest expected returns)
         top_idx = np.argsort(capmt_returns)[::-1][:top_n]
         capmt_returns_selected = capmt_returns[top_idx]
         selected_stocks = [stocks[j] for j in top_idx]
         
         Sigma_selected = Sigma.loc[selected_stocks, selected_stocks]
         try:
+            # Get optimal weights using the functions defined earlier
             optimal_weights_MVM = mean_variance_opt(Sigma_selected, capmt_returns_selected, risk_aversion=3.0)
             optimal_weights_MV = min_variance_opt(Sigma_selected)
         except Exception as e:
-            continue  # Skip period if optimization fails
-        
+            continue  
+        # Calculate the profit after committing to the model weights and save the results
         next_return_vector = returns.iloc[i][selected_stocks].values
         mvm_returns.append(next_return_vector @ optimal_weights_MVM)
         mv_returns.append(next_return_vector @ optimal_weights_MV)
-    
+    # Calculate the cumulative profit obtained after simulating every period
     final_cum_mvm = np.prod(1 + np.array(mvm_returns))
     final_cum_mv  = np.prod(1 + np.array(mv_returns))
     
@@ -123,13 +116,13 @@ def simulate_performance(rolling_window, top_n):
 
 def simulate_time_series(rolling_window, top_n):
     """
-    Run the simulation and return the series (and dates) of portfolio returns
-    for both models, as well as the list of selected stocks per period.
+    Run the simulation and return the time series (with dates) of portfolio returns
+    for both models, as well as the list of selected stocks for each period.
     """
     mvm_returns = []
     mv_returns = []
     date_list = []
-    selected_stocks_list = []  # Record selected stocks for each period
+    selected_stocks_list = []  # Record the selected stocks for each period
     
     for i in range(rolling_window, len(returns)):
         past_slice = returns.iloc[i - rolling_window:i]
@@ -165,10 +158,8 @@ def simulate_time_series(rolling_window, top_n):
     
     return date_list, np.array(mvm_returns), np.array(mv_returns), selected_stocks_list
 
-# -----------------------------
 # Grid Search over Hyper-parameters
-# -----------------------------
-rolling_window_list = [4, 6, 8, 10, 12]      # (in quarters)
+rolling_window_list = [4, 6, 8, 10, 12]      # in quarters
 top_n_list = [5, 10, 15, 20, 25]              # Number of stocks to select
 
 results_MVM = np.zeros((len(rolling_window_list), len(top_n_list)))
@@ -185,8 +176,6 @@ for i, rw in enumerate(rolling_window_list):
 df_MVM = pd.DataFrame(results_MVM, index=rolling_window_list, columns=top_n_list)
 df_MV = pd.DataFrame(results_MV, index=rolling_window_list, columns=top_n_list) 
 
-
-# -----------------------------
 # Plot Grid Search Results
 # -----------------------------
 # For the MVM model:
@@ -196,16 +185,6 @@ for tn in top_n_list:
 plt.xlabel('Rolling Window Size (quarters)')
 plt.ylabel('Final Cumulative Return')
 plt.title('Grid Search: MVM Performance vs. Rolling Window Size')
-plt.legend()
-plt.grid(True)
-plt.show()
-
-plt.figure(figsize=(10, 6))
-for rw in rolling_window_list:
-    plt.plot(top_n_list, df_MVM.loc[rw], marker='o', label=f'Window = {rw}')
-plt.xlabel('Number of Stocks Selected (top_n)')
-plt.ylabel('Final Cumulative Return')
-plt.title('Grid Search: MVM Performance vs. Number of Stocks Selected')
 plt.legend()
 plt.grid(True)
 plt.show()
@@ -221,19 +200,7 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
-plt.figure(figsize=(10, 6))
-for rw in rolling_window_list:
-    plt.plot(top_n_list, df_MV.loc[rw], marker='o', label=f'Window = {rw}')
-plt.xlabel('Number of Stocks Selected (top_n)')
-plt.ylabel('Final Cumulative Return')
-plt.title('Grid Search: MV Performance vs. Number of Stocks Selected')
-plt.legend()
-plt.grid(True)
-plt.show()
-
-# -----------------------------
 # Select Best Hyper-parameters
-# -----------------------------
 best_idx_MVM = np.unravel_index(np.argmax(results_MVM, axis=None), results_MVM.shape)
 best_rw_MVM = rolling_window_list[best_idx_MVM[0]]
 best_top_n_MVM = top_n_list[best_idx_MVM[1]]
@@ -244,21 +211,16 @@ best_rw_MV = rolling_window_list[best_idx_MV[0]]
 best_top_n_MV = top_n_list[best_idx_MV[1]]
 print(f"Best hyper-parameters for MV: Rolling Window = {best_rw_MV}, Top_n = {best_top_n_MV}")
 
-# -----------------------------
 # Re-estimate Models with Best Hyper-parameters and Produce Performance Plots
-# -----------------------------
-# Run simulation to get time series of portfolio returns and selected stocks using best hyper-parameters.
 dates_MVM, mvm_returns_series, _, selected_list_MVM = simulate_time_series(best_rw_MVM, best_top_n_MVM)
 dates_MV, _, mv_returns_series, selected_list_MV   = simulate_time_series(best_rw_MV, best_top_n_MV)
 
-# --- Align Time Series to a Common Date Range ---
+# Align Time Series to a Common Date Range 
 s_MVM = pd.Series(mvm_returns_series, index=dates_MVM)
 s_MV  = pd.Series(mv_returns_series, index=dates_MV)
 common_dates = s_MVM.index.intersection(s_MV.index)
 s_MVM = s_MVM.loc[common_dates]
 s_MV = s_MV.loc[common_dates]
-
-# Align S&P 500 returns to the same common dates.
 s_SP = market_returns.loc[common_dates]
 
 # Compute cumulative returns.
@@ -299,71 +261,66 @@ ax.legend(fontsize=12)
 plt.tight_layout()
 plt.show()
 
-# -----------------------------
-# Compute and Print Final Recommended Portfolio Weights
-# -----------------------------
-# For demonstration, we re-run the optimization using the last available data from the best rolling window.
-# (This is done for both models separately.)
-last_period_slice = returns.iloc[-best_rw_MVM:]
-Sigma_last = last_period_slice.cov()
-last_date = last_period_slice.index[-1]
-risk_free_last = risk_free.loc[last_date]
-
-# Compute CAPM betas for the last period.
-betas_last = np.array([
-    last_period_slice[stock].cov(market_returns.loc[last_period_slice.index].squeeze()) /
-    market_returns.loc[last_period_slice.index].var() for stock in stocks
-])
-market_returns_last_mean = market_returns.loc[last_period_slice.index].mean()
-capmt_returns_last = risk_free_last + betas_last * (market_returns_last_mean - risk_free_last)
-
-# Select the top stocks using best_top_n_MVM.
-top_idx_last = np.argsort(capmt_returns_last)[::-1][:best_top_n_MVM]
-capmt_returns_last_selected = capmt_returns_last[top_idx_last]
-selected_stocks_last = [stocks[j] for j in top_idx_last]
-
-Sigma_last_selected = Sigma_last.loc[selected_stocks_last, selected_stocks_last]
-
-# Compute the optimal weights using MVM and MV.
-weights_MVM_last = mean_variance_opt(Sigma_last_selected, capmt_returns_last_selected, risk_aversion=3.0)
-weights_MV_last = min_variance_opt(Sigma_last_selected)
-
-print("\nLast recommended portfolio weights (MVM):")
-print(pd.Series(weights_MVM_last, index=selected_stocks_last).round(4))
-
-print("\nLast recommended portfolio weights (MV):")
-print(pd.Series(weights_MV_last, index=selected_stocks_last).round(4))
-
-# -----------------------------
 # Compute Frequency of Selected Stocks & Plot Pie Charts
-# -----------------------------
-# Flatten the lists of selected stocks for each simulation period.
-# -----------------------------
-# Compute Frequency of Selected Stocks & Plot Pie Charts (Top 10)
 # -----------------------------
 # Flatten the lists of selected stocks for each simulation period.
 flat_MVM = [stock for period in selected_list_MVM for stock in period]
 flat_MV  = [stock for period in selected_list_MV for stock in period]
 
-from collections import Counter
 counter_MVM = Counter(flat_MVM)
 counter_MV  = Counter(flat_MV)
 
-# Get top 10 most common stocks (if available)
+# Get the top 10 most common stocks
 top10_MVM = dict(counter_MVM.most_common(10))
 top10_MV  = dict(counter_MV.most_common(10))
 
-# Plot pie chart for MVM selected stocks (Top 10)
-plt.figure(figsize=(8,8))
-plt.pie(top10_MVM.values(), labels=top10_MVM.keys(), autopct='%1.1f%%', startangle=140)
-plt.title('Top 10 Most Frequently Selected Stocks (MVM)')
-plt.show()
+# Define a quant project presentation color palette using the 'tab10' colormap.
+# This palette provides 10 distinct colors.
+quant_colors = list(plt.get_cmap('tab10').colors)
 
-# Plot pie chart for MV selected stocks (Top 10)
-plt.figure(figsize=(8,8))
-plt.pie(top10_MV.values(), labels=top10_MV.keys(), autopct='%1.1f%%', startangle=140)
-plt.title('Top 10 Most Frequently Selected Stocks (MV)')
-plt.show() 
+# Create a figure with two subplots (side by side) with a white background.
+fig, axs = plt.subplots(1, 2, figsize=(16, 8), facecolor='white')
+
+# Ensure each subplot has a white background.
+for ax in axs:
+    ax.set_facecolor('white')
+
+# Define an explode value for all slices to add a slight offset.
+explode = [0.05] * 10
+
+# -----------------------------
+# Pie Chart for MVM Selected Stocks
+# -----------------------------
+patches, texts, autotexts = axs[0].pie(
+    list(top10_MVM.values()),
+    labels=list(top10_MVM.keys()),
+    autopct='%1.1f%%',
+    startangle=140,
+    colors=quant_colors,
+    shadow=True,
+    explode=explode,
+    textprops={'fontsize': 12, 'color': 'black'}
+)
+axs[0].set_title('Top 10 Most Frequently Selected Stocks (MVM)', fontsize=16, color='black')
+
+# -----------------------------
+# Pie Chart for MV Selected Stocks
+# -----------------------------
+patches, texts, autotexts = axs[1].pie(
+    list(top10_MV.values()),
+    labels=list(top10_MV.keys()),
+    autopct='%1.1f%%',
+    startangle=140,
+    colors=quant_colors,
+    shadow=True,
+    explode=explode,
+    textprops={'fontsize': 12, 'color': 'black'}
+)
+axs[1].set_title('Top 10 Most Frequently Selected Stocks (MV)', fontsize=16, color='black')
+
+# Adjust layout for neatness.
+plt.tight_layout()
+plt.show()
 
 df_returns = pd.DataFrame({
     'MVM Period Return (%)': s_MVM * 100,
@@ -371,12 +328,12 @@ df_returns = pd.DataFrame({
     'SP Period Return (%)': s_SP * 100,
 }, index=common_dates)
 
-# Compute cumulative returns and convert them to percentage gains (starting at 0%)
+# Compute cumulative returns and convert them to percentage gains 
 df_returns['MVM Cumulative Return (%)'] = (1 + s_MVM).cumprod() * 100 - 100
 df_returns['MV Cumulative Return (%)']  = (1 + s_MV).cumprod()  * 100 - 100
 df_returns['SP Cumulative Return (%)']  = (1 + s_SP).cumprod()  * 100 - 100
 
 # Print the table rounded to 2 decimal places
 print("Period Returns and Cumulative Returns Comparison:")
-print(df_returns[['MVM Period Return (%)','MV Period Return (%)','SP Period Return (%)']].round(2)) 
-print(df_returns[['MVM Cumulative Return (%)','MV Cumulative Return (%)','SP Cumulative Return (%)']].round(2)) 
+print(df_returns[['MVM Period Return (%)', 'MV Period Return (%)', 'SP Period Return (%)']].round(2))
+print(df_returns[['MVM Cumulative Return (%)', 'MV Cumulative Return (%)', 'SP Cumulative Return (%)']].round(2))
